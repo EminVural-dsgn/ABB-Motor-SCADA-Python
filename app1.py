@@ -1,30 +1,64 @@
-import ttkbootstrap as ttk
-from ttkbootstrap.constants import *
-from ttkbootstrap.dialogs import Messagebox
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-import matplotlib.pyplot as plt
-import pandas as pd
-from datetime import datetime
-import os
-import minimalmodbus
-import serial
-from collections import deque
-import time
-import json
-from tkinter import filedialog
+# --- KÜTÜPHANE İÇE AKTARIMLARI ---
+import ttkbootstrap as ttk # Modern ve şık Tkinter arayüzleri oluşturmak için kullanılır
+from ttkbootstrap.constants import * # Arayüz bileşenlerinin konum/renk sabitleri (LEFT, RIGHT, SUCCESS vb.)
+from ttkbootstrap.dialogs import Messagebox # Kullanıcıya hata veya bilgi pencereleri göstermek için
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg # Matplotlib grafiklerini Tkinter arayüzüne gömmek için
+import matplotlib.pyplot as plt # Canlı veri grafiklerini çizmek için
+import pandas as pd # Verileri tablo halinde (Excel formatında) kaydetmek ve işlemek için
+from datetime import datetime # Rapor dosyalarına tarih ve saat damgası vurmak için
+import os # Dosya yolları ve sistem işlemleri için
+import minimalmodbus # Sürücü (ABB/Siemens vb.) ile Modbus RTU protokolü üzerinden haberleşmek için
+import serial # Seri port (COM) ayarlarını (Parity, Stopbits) yapılandırmak için
+from collections import deque # Grafikler için hafızayı şişirmeyen, son N veriyi tutan kuyruk yapısı
+import time # Zamanlayıcı ve gecikme fonksiyonları için
+import json # Donanım ayarlarını (.json) kaydetmek ve okumak için
+from tkinter import filedialog # İçe/Dışa aktarma işlemlerinde dosya seçme penceresi açmak için
+
+# --- GLOBAL UI AYARLARI (TÜM ARAYÜZ BURADAN YÖNETİLİR) ---
+# DİKKAT: Aşağıdaki "Segoe UI" yazısını "Arial" veya "Times New Roman" 
+# olarak değiştirirseniz, programdaki tüm arayüzün yazı tipi tek seferde değişir!
+UI_FONT_FAMILY = "Segoe UI" 
+UI_FONT_SIZE_NORMAL = 10     # Normal metinlerin boyutu
+UI_FONT_SIZE_TITLE = 16      # Başlık metinlerinin boyutu
+UI_FONT_SIZE_LARGE = 24      # Büyük başlıkların boyutu
+
+
+# --- GLOBAL UI AYARLARI ---
+UI_FONT_FAMILY = "Segoe UI" # Arayüzün varsayılan yazı tipi (Örn: "Arial", "Times New Roman")
+UI_FONT_SIZE_NORMAL = 10     # Normal metinlerin boyutu
+UI_FONT_SIZE_TITLE = 16      # Başlık metinlerinin boyutu
+UI_FONT_SIZE_LARGE = 24      # Büyük başlıkların boyutu
+
+# --- GLOBAL UI AYARLARI ---
+UI_FONT_FAMILY = "Segoe UI" # Arayüzün varsayılan yazı tipi (Örn: "Arial", "Times New Roman")
+UI_FONT_SIZE_NORMAL = 10     # Normal metinlerin boyutu
+UI_FONT_SIZE_TITLE = 16      # Başlık metinlerinin boyutu
+UI_FONT_SIZE_LARGE = 24      # Büyük başlıkların boyutu
+
+# --- GLOBAL UI AYARLARI ---
+UI_FONT_FAMILY = "Segoe UI" # Arayüzün varsayılan yazı tipi (Örn: "Arial", "Times New Roman")
+UI_FONT_SIZE_NORMAL = 10     # Normal metinlerin boyutu
+UI_FONT_SIZE_TITLE = 16      # Başlık metinlerinin boyutu
+UI_FONT_SIZE_LARGE = 24      # Büyük başlıkların boyutu
 
 class UltimateACS880App:
+    """
+    Ana SCADA Uygulama Sınıfı. 
+    Arayüzün çizilmesi, Modbus haberleşmesi ve canlı grafiklerin yönetimi bu sınıf üzerinden yapılır.
+    """
     def __init__(self, root):
-        self.root = root
-        self.dil = "EN"
-        self.tema = "dark"
+        self.root = root # Tkinter ana pencere objesi
+        self.dil = "EN" # Varsayılan dil İngilizce (EN)
+        self.tema = "dark" # Varsayılan arayüz teması Karanlık (Dark)
         self.root.title("ABB ACS880 Akıllı SCADA & Kontrol Sistemi")
-        self.root.state('zoomed') 
+        self.root.state('zoomed') # Uygulamayı tam ekran (maximize) başlatır
         
-        self.instrument = None 
-        self.baglanti_aktif = False
-        self.canli_okuma_aktif = False
-        self.motor_calisiyor = False
+        # --- DURUM DEĞİŞKENLERİ ---
+        self.instrument = None # Modbus bağlantı objesi (Başlangıçta boş)
+        self.baglanti_aktif = False # Sürücü ile bağlantı durumu
+        self.canli_okuma_aktif = False # Döngüsel veri okumanın (telemetri) aktiflik durumu
+        self.motor_calisiyor = False # Motorun o anki dönüş durumu
+        self.rapor_verileri = [] # Dinamik rapor verileri
 
         # --- LIVE GRAPH HISTORY ---
         self.max_len = 100
@@ -83,6 +117,8 @@ class UltimateACS880App:
                 "lf_oper": " Operation & Reporting ",
                 "btn_start": "▶ START MOTOR",
                 "btn_stop": "⏹ STOP MOTOR",
+                "lbl_timer": "Run Duration:",
+                "btn_timed_start": "⏱ TIMED START",
                 "btn_estop": "🛑 EMERGENCY STOP",
                 "btn_report": "📊 FINISH TEST & REPORT",
                 "tab_chart_curr": "Phase Currents (A)",
@@ -177,6 +213,8 @@ class UltimateACS880App:
                 "lf_oper": " Operasyon & Raporlama ",
                 "btn_start": "▶ MOTORU BAŞLAT",
                 "btn_stop": "⏹ MOTORU DURDUR",
+                "lbl_timer": "Çalışma Süresi:",
+                "btn_timed_start": "⏱ SÜRELİ BAŞLAT",
                 "btn_estop": "🛑 ACİL STOP (Serbest Duruş)",
                 "btn_report": "📊 TESTİ BİTİR VE RAPORLA",
                 "tab_chart_curr": "Faz Akımları (A)",
@@ -285,29 +323,29 @@ class UltimateACS880App:
         
         self.card1 = ttk.Frame(cards_frame, padding=35, bootstyle="dark")
         self.card1.pack(side=LEFT, padx=25, expand=True, fill=BOTH)
-        self.create_t_widget(ttk.Label, self.card1, "card1_title", font=("Segoe UI", 16, "bold"), bootstyle=INFO).pack(pady=10)
+        self.create_t_widget(ttk.Label, self.card1, "card1_title", font=(UI_FONT_FAMILY, UI_FONT_SIZE_TITLE, "bold"), bootstyle=INFO).pack(pady=10)
         self.create_t_widget(ttk.Label, self.card1, "card1_desc", justify=CENTER).pack(pady=15)
         self.create_t_widget(ttk.Button, self.card1, "card1_btn", bootstyle=(INFO, OUTLINE), width=25, command=self.pencere_baglanti).pack(pady=15, ipady=8)
         
         self.card2 = ttk.Frame(cards_frame, padding=35, bootstyle="dark")
         self.card2.pack(side=LEFT, padx=25, expand=True, fill=BOTH)
-        self.create_t_widget(ttk.Label, self.card2, "card2_title", font=("Segoe UI", 16, "bold"), bootstyle=WARNING).pack(pady=10)
+        self.create_t_widget(ttk.Label, self.card2, "card2_title", font=(UI_FONT_FAMILY, UI_FONT_SIZE_TITLE, "bold"), bootstyle=WARNING).pack(pady=10)
         self.create_t_widget(ttk.Label, self.card2, "card2_desc", justify=CENTER).pack(pady=15)
         self.create_t_widget(ttk.Button, self.card2, "card2_btn", bootstyle=(WARNING, OUTLINE), width=25, command=self.pencere_kontrol).pack(pady=15, ipady=8)
 
         self.durum_frame = ttk.Frame(self.root, bootstyle="dark", padding=12)
         self.durum_frame.pack(side=BOTTOM, fill=X)
         
-        self.create_t_widget(ttk.Label, self.durum_frame, "sys_status", font=("Segoe UI", 10, "bold")).pack(side=LEFT, padx=(10, 5))
-        self.durum_label = self.create_t_widget(ttk.Label, self.durum_frame, "offline", font=("Segoe UI", 10), bootstyle=DANGER)
+        self.create_t_widget(ttk.Label, self.durum_frame, "sys_status", font=(UI_FONT_FAMILY, UI_FONT_SIZE_NORMAL, "bold")).pack(side=LEFT, padx=(10, 5))
+        self.durum_label = self.create_t_widget(ttk.Label, self.durum_frame, "offline", font=(UI_FONT_FAMILY, UI_FONT_SIZE_NORMAL), bootstyle=DANGER)
         self.durum_label.pack(side=LEFT)
-        self.create_t_widget(ttk.Label, self.durum_frame, "hardware", font=("Segoe UI", 10, "italic")).pack(side=RIGHT, padx=20)
+        self.create_t_widget(ttk.Label, self.durum_frame, "hardware", font=(UI_FONT_FAMILY, UI_FONT_SIZE_NORMAL, "italic")).pack(side=RIGHT, padx=20)
 
         self.canli_okuma_dongusu()
 
     def yukle_ayarlar(self):
         self.katsayi_tablosu = {
-            "hiz_okuma": 1.0, "hiz_yazma": 0.075, "akim": 0.01, "tork_okuma": 0.1, 
+            "hiz_okuma": 0.075, "hiz_yazma": 0.075, "akim": 0.01, "tork_okuma": 0.1, 
             "tork_yazma": 0.01, "rampa": 0.1, "guc": 0.01, "voltaj": 0.1, "frekans": 0.01
         }
         self.adres_haritasi = {
@@ -334,23 +372,38 @@ class UltimateACS880App:
         
         if os.path.exists(self.config_dosyasi):
             try:
+                # config.json dosyası okunur ve 'kayitli' adında bir sözlüğe aktarılır
                 with open(self.config_dosyasi, "r", encoding="utf-8") as f:
                     kayitli = json.load(f)
                     
+                # 1. Çarpanlar (Scaling Factors) döngüsü
+                # JSON dosyasındaki her bir çarpan okunup, katsayi_tablosu'na float (ondalıklı) olarak atanır
                 if "scaling_factors" in kayitli:
                     for k, v in kayitli["scaling_factors"].items():
-                        if k in self.katsayi_tablosu: self.katsayi_tablosu[k] = float(v)
+                        if k in self.katsayi_tablosu: 
+                            if k == "hiz_okuma" and (float(v) == 1.0 or float(v) == 0.01):
+                                self.katsayi_tablosu[k] = 0.075
+                            elif k == "hiz_yazma" and float(v) == 1.0:
+                                self.katsayi_tablosu[k] = 0.075
+                            else:
+                                self.katsayi_tablosu[k] = float(v)
                 
+                # 2. Modbus Adresleri döngüsü
+                # JSON dosyasındaki adresler okunup, adres_haritasi'na int (tam sayı) olarak atanır
                 if "modbus_addresses" in kayitli:
                     for k, v in kayitli["modbus_addresses"].items():
                         if k in self.adres_haritasi: self.adres_haritasi[k] = int(v)
                         
+                # 3. Seri Haberleşme (Serial Config) döngüsü
+                # Parity değeri metin (string), baudrate ve timeout değerleri float olarak atanır
                 if "serial_config" in kayitli:
                     for k, v in kayitli["serial_config"].items():
                         if k in self.serial_config:
                             if k == "parity": self.serial_config[k] = str(v).upper()
                             else: self.serial_config[k] = float(v)
                             
+                # 4. Sürüş Şifreleri (Control Words) döngüsü
+                # 1142, 1151 gibi şifreler int (tam sayı) olarak sisteme tanıtılır
                 if "control_words" in kayitli:
                     for k, v in kayitli["control_words"].items():
                         if k in self.control_words: self.control_words[k] = int(v)
@@ -359,6 +412,10 @@ class UltimateACS880App:
             self.kaydet_ayarlar()
 
     def kaydet_ayarlar(self):
+        """
+        Sistemdeki mevcut katsayı, adres, haberleşme ve şifre sözlüklerini 
+        toplayıp tek bir JSON dosyasına yazar.
+        """
         veri = {
             "scaling_factors": self.katsayi_tablosu,
             "modbus_addresses": self.adres_haritasi,
@@ -428,7 +485,7 @@ class UltimateACS880App:
         # Serial Tab
         row = 0
         for k, v in self.serial_config.items():
-            ttk.Label(tab_serial, text=serial_labels.get(k, k), font=("Segoe UI", 10, "bold")).grid(row=row, column=0, sticky=W, pady=8, padx=10)
+            ttk.Label(tab_serial, text=serial_labels.get(k, k), font=(UI_FONT_FAMILY, UI_FONT_SIZE_NORMAL, "bold")).grid(row=row, column=0, sticky=W, pady=8, padx=10)
             ent = ttk.Entry(tab_serial, width=15)
             ent.insert(0, str(v))
             ent.grid(row=row, column=1, pady=8, padx=10)
@@ -438,7 +495,7 @@ class UltimateACS880App:
         # CW Tab
         row = 0
         for k, v in self.control_words.items():
-            ttk.Label(tab_cw, text=cw_labels.get(k, k), font=("Segoe UI", 10, "bold")).grid(row=row, column=0, sticky=W, pady=6, padx=10)
+            ttk.Label(tab_cw, text=cw_labels.get(k, k), font=(UI_FONT_FAMILY, UI_FONT_SIZE_NORMAL, "bold")).grid(row=row, column=0, sticky=W, pady=6, padx=10)
             ent = ttk.Entry(tab_cw, width=15)
             ent.insert(0, str(v))
             ent.grid(row=row, column=1, pady=6, padx=10)
@@ -448,7 +505,7 @@ class UltimateACS880App:
         # Scale Tab
         row = 0
         for k, v in self.katsayi_tablosu.items():
-            ttk.Label(tab_scale, text=scale_labels.get(k, k), font=("Segoe UI", 10, "bold")).grid(row=row, column=0, sticky=W, pady=8, padx=10)
+            ttk.Label(tab_scale, text=scale_labels.get(k, k), font=(UI_FONT_FAMILY, UI_FONT_SIZE_NORMAL, "bold")).grid(row=row, column=0, sticky=W, pady=8, padx=10)
             ent = ttk.Entry(tab_scale, width=15)
             ent.insert(0, str(v))
             ent.grid(row=row, column=1, pady=8, padx=10)
@@ -458,7 +515,7 @@ class UltimateACS880App:
         # Addr Tab
         row = 0
         for k, v in self.adres_haritasi.items():
-            ttk.Label(tab_addr, text=addr_labels.get(k, k), font=("Segoe UI", 10, "bold")).grid(row=row, column=0, sticky=W, pady=6, padx=10)
+            ttk.Label(tab_addr, text=addr_labels.get(k, k), font=(UI_FONT_FAMILY, UI_FONT_SIZE_NORMAL, "bold")).grid(row=row, column=0, sticky=W, pady=6, padx=10)
             ent = ttk.Entry(tab_addr, width=15)
             ent.insert(0, str(v))
             ent.grid(row=row, column=1, pady=6, padx=10)
@@ -656,15 +713,118 @@ class UltimateACS880App:
             self.tum_parametreleri_yaz()
             self.root.after(200, self.veri_gonderim_dongusu)
 
+    def motor_baslat_sureli(self):
+        """
+        Kullanıcının girdiği süre (Dakika veya Saniye) boyunca motoru çalıştırır
+        ve süre bittiğinde otomatik olarak durdurur.
+        """
+        try:
+            sure_degeri = float(self.ent_sure.get()) # Kullanıcının girdiği süre okunur
+            birim = self.cb_sure_birim.get()         # Dakika (Min) veya Saniye (Sec) seçimi
+            
+            if sure_degeri <= 0:
+                Messagebox.show_warning("Süre sıfırdan büyük olmalıdır.", title="Geçersiz Süre")
+                return
+                
+            # Süreyi milisaniyeye (ms) çeviriyoruz (Tkinter .after() fonksiyonu ms cinsinden çalışır)
+            ms_sure = int(sure_degeri * 60000) if birim == "Min" else int(sure_degeri * 1000)
+            
+            self.motor_baslat() # Normal motor başlatma rutinini çağırır
+            
+            if self.motor_calisiyor:
+                msg = f"Motor {sure_degeri} {birim} boyunca çalışacak." if self.dil == "TR" else f"Motor will run for {sure_degeri} {birim}."
+                self.goster_bildirim(msg, "info")
+                
+                # Varsa önceki zamanlayıcıları sıfırla ki çakışma olmasın
+                self.iptal_et_zamanlayici()
+                
+                # ms_sure kadar süre sonra motor_durdur fonksiyonunu otomatik tetikle
+                self.timer_id = self.root.after(ms_sure, self.motor_durdur)
+                
+                # Görsel sayacın saniye cinsinden başlangıç değerini belirle
+                self.kalan_sure_sn = int(sure_degeri * 60) if birim == "Min" else int(sure_degeri)
+                self.sayac_guncelle() # Görsel sayacı başlat
+                
+        except ValueError:
+            Messagebox.show_warning("Lütfen geçerli bir sayı giriniz.", title="Geçersiz Format")
+
+    def sayac_guncelle(self):
+        """
+        Ekranda 'Kalan Süre: 00:00' şeklinde geri sayım yapan görsel sayacı her saniye günceller.
+        """
+        # Eğer bir zamanlayıcı aktif değilse, sayacı sıfırla ve durdur
+        if not hasattr(self, 'timer_id') or not self.timer_id:
+            if hasattr(self, 'ent_sayac'):
+                self.ent_sayac.configure(state="normal")
+                self.ent_sayac.delete(0, 'end')
+                self.ent_sayac.insert(0, "00:00")
+                self.ent_sayac.configure(state="readonly")
+            return
+            
+        # Eğer hala süre varsa ekrandaki sayacı azaltarak güncelle
+        if hasattr(self, 'kalan_sure_sn') and self.kalan_sure_sn > 0:
+            dk = self.kalan_sure_sn // 60
+            sn = self.kalan_sure_sn % 60
+            metin = f"{dk:02d}:{sn:02d}"
+            
+            if hasattr(self, 'ent_sayac'):
+                self.ent_sayac.configure(state="normal")
+                self.ent_sayac.delete(0, 'end')
+                self.ent_sayac.insert(0, metin)
+                self.ent_sayac.configure(state="readonly")
+                
+            self.kalan_sure_sn -= 1
+            # Fonksiyonu 1 saniye (1000ms) sonra tekrar çağırarak döngü oluştur (Geri sayım)
+            self.sayac_id = self.root.after(1000, self.sayac_guncelle)
+        else:
+            # Süre bittiğinde sayacı sıfırla
+            if hasattr(self, 'ent_sayac'):
+                self.ent_sayac.configure(state="normal")
+                self.ent_sayac.delete(0, 'end')
+                self.ent_sayac.insert(0, "00:00")
+                self.ent_sayac.configure(state="readonly")
+
+    def iptal_et_zamanlayici(self):
+        """
+        Çalışmakta olan zamanlayıcıyı veya sayacı (varsa) anında iptal eder.
+        Özellikle Acil Stop veya manuel Stop butonuna basıldığında kullanılır.
+        """
+        if hasattr(self, 'timer_id') and self.timer_id:
+            try: self.root.after_cancel(self.timer_id)
+            except: pass
+            self.timer_id = None
+            
+        if hasattr(self, 'sayac_id') and self.sayac_id:
+            try: self.root.after_cancel(self.sayac_id)
+            except: pass
+            self.sayac_id = None
+            
+        if hasattr(self, 'ent_sayac'):
+            self.ent_sayac.configure(state="normal")
+            self.ent_sayac.delete(0, 'end')
+            self.ent_sayac.insert(0, "00:00")
+            self.ent_sayac.configure(state="readonly")
+
     def motor_baslat(self):
+        """
+        Kullanıcı 'START MOTOR' butonuna bastığında çalışır.
+        Sürücüyü önce 'Hazır' durumuna, 100ms sonra 'Çalış' durumuna geçirir.
+        """
         if self.baglanti_aktif and self.instrument:
             self.motor_calisiyor = True
+            self.rapor_verileri = [] # Yeni rapor verisi başlat
             secilen_mod = self.cb_control_mode.get() if hasattr(self, 'cb_control_mode') else "Speed"
+            
+            # Hız veya Tork moduna göre ilgili 'Hazır (Ready)' ve 'Çalış (Run)' şifreleri çekilir
             cw_hazirlik = self.control_words["cw_speed_rdy"] if secilen_mod == "Speed" else self.control_words["cw_torque_rdy"]
             cw_start = self.control_words["cw_speed_run"] if secilen_mod == "Speed" else self.control_words["cw_torque_run"]
+            
             try:
+                # 1. Adım: Sürücüye hazırlık şifresini gönder
                 self.instrument.write_register(self.adres_haritasi["write_cw"], cw_hazirlik, 0)
+                # 2. Adım: 100 milisaniye bekledikten sonra (sürücü hazır duruma geçmesi için) Start şifresini gönder
                 self.root.after(100, lambda: self.instrument.write_register(self.adres_haritasi["write_cw"], cw_start, 0))
+                
                 self.goster_bildirim(self.texts[self.dil]["msg_start"], "success")
             except Exception as e:
                 Messagebox.show_error(f"Hata: {e}", title="Haberleşme Hatası")
@@ -672,19 +832,33 @@ class UltimateACS880App:
             Messagebox.show_error(self.texts[self.dil]["msg_conn_err"], title="Bağlantı Hatası")
 
     def motor_durdur(self):
+        """
+        Kullanıcı 'STOP MOTOR' butonuna bastığında çalışır.
+        Sürücüyü rampa ile durdurur.
+        """
+        self.iptal_et_zamanlayici()
         if self.baglanti_aktif and self.instrument:
+            calisiyordu = self.motor_calisiyor
             self.motor_calisiyor = False
             try:
+                # 1. Adım: Durdurma şifresini (Örn: ABB için 1142 OFF1) gönder
                 self.instrument.write_register(self.adres_haritasi["write_cw"], self.control_words["cw_stop"], 0)
+                # 2. Adım: Güvenlik amaçlı hız referansını da sıfırla
                 self.instrument.write_register(self.adres_haritasi["write_hiz"], 0, 0)
+                
                 self.goster_bildirim(self.texts[self.dil]["msg_stop"], "warning")
             except Exception as e:
                 Messagebox.show_error(f"Hata: {e}", title="Haberleşme Hatası")
+                
+            if calisiyordu:
+                self.rapor_olustur(oto=True)
         else:
             Messagebox.show_error(self.texts[self.dil]["msg_conn_err"], title="Bağlantı Hatası")
 
     def motor_acil_stop(self):
+        self.iptal_et_zamanlayici()
         if self.baglanti_aktif and self.instrument:
+            calisiyordu = self.motor_calisiyor
             self.motor_calisiyor = False
             try:
                 self.instrument.write_register(self.adres_haritasi["write_cw"], self.control_words["cw_estop"], 0)
@@ -692,15 +866,23 @@ class UltimateACS880App:
                 self.goster_bildirim(self.texts[self.dil]["msg_estop"], "error")
             except Exception as e:
                 Messagebox.show_error(f"Hata: {e}", title="Haberleşme Hatası")
+                
+            if calisiyordu:
+                self.rapor_olustur(oto=True)
         else:
             Messagebox.show_error(self.texts[self.dil]["msg_conn_err"], title="Bağlantı Hatası")
 
     def modbus_baglan(self, port, baud, mode, slave_id, window):
+        """
+        Arayüzden seçilen COM Port ve donanım ayarlarına göre fiziksel Modbus RTU/ASCII bağlantısını başlatır.
+        """
         try:
+            # 1. Adım: minimalmodbus kütüphanesi üzerinden Instrument nesnesini başlat
             self.instrument = minimalmodbus.Instrument(port, slave_id)
             self.instrument.serial.baudrate = baud
             self.instrument.serial.bytesize = 8
             
+            # 2. Adım: config.json içerisindeki seri haberleşme verilerini parse et ve uygula
             p_str = self.serial_config.get("parity", "NONE")
             if p_str == "EVEN": p = serial.PARITY_EVEN
             elif p_str == "ODD": p = serial.PARITY_ODD
@@ -710,13 +892,17 @@ class UltimateACS880App:
             self.instrument.serial.stopbits = self.serial_config.get("stopbits", 1.0)
             self.instrument.serial.timeout = self.serial_config.get("timeout", 0.2)
             
+            # 3. Adım: RTU veya ASCII modunu ayarla
             self.instrument.mode = minimalmodbus.MODE_RTU if mode == "RTU" else minimalmodbus.MODE_ASCII
-            self.baglanti_aktif = True
             
+            # 4. Adım: Bağlantı başarılı oldu, arayüzdeki durum ikonlarını güncelle
+            self.baglanti_aktif = True
             self.durum_sifirla()
-            window.destroy() 
+            window.destroy() # Bağlantı penceresini kapat
             self.goster_bildirim(self.texts[self.dil]["msg_conn_ok"] + port, "success")
+            
         except Exception as e:
+            # Hata durumunda programın çökmesini engelle, kullanıcıya bildir
             self.baglanti_aktif = False
             Messagebox.show_error(f"Bağlantı kurulamadı:\n{e}", title="Bağlantı Hatası")
             self.goster_bildirim(f"Error: {e}", "error")
@@ -733,24 +919,29 @@ class UltimateACS880App:
             u_curr = 0.0
             v_curr = 0.0
             w_curr = 0.0
+            m_curr = 0.0
+            o_freq = 0.0
+            flux = 0.0
             
-            if secilen_mod == "Speed":
-                try:
-                    ham_hiz = self.instrument.read_register(self.adres_haritasi["read_hiz_gercek"], 0, signed=True)
-                    gercek_hiz = ham_hiz * self.katsayi_tablosu["hiz_okuma"] 
-                    if hasattr(self, 'lbl_anlik_hiz'):
-                        self.lbl_anlik_hiz_title.config(text=self.texts[self.dil]["lbl_speed"])
-                        self.lbl_anlik_hiz.config(text=f"{gercek_hiz:.1f} RPM")
-                except: pass
-            else:
-                try:
-                    ham_tork = self.instrument.read_register(self.adres_haritasi["read_tork"], 0, signed=True)
-                    gercek_tork = ham_tork * self.katsayi_tablosu["tork_okuma"]
-                    if hasattr(self, 'lbl_anlik_hiz'):
-                        self.lbl_anlik_hiz_title.config(text=self.texts[self.dil]["lbl_torque"])
-                        self.lbl_anlik_hiz.config(text=f"{gercek_tork:.1f} %")
-                except: pass
-                
+            try:
+                ham_hiz = self.instrument.read_register(self.adres_haritasi["read_hiz_gercek"], 0, signed=True)
+                gercek_hiz = ham_hiz * self.katsayi_tablosu["hiz_okuma"] 
+            except: pass
+            
+            try:
+                ham_tork_full = self.instrument.read_register(self.adres_haritasi["read_tork"], 0, signed=True)
+                gercek_tork = ham_tork_full * self.katsayi_tablosu["tork_okuma"]
+                self.arayuz_kutu_guncelle(self.dp_kutulari.get("Motor Torque (%)"), f"{gercek_tork:.1f}")
+            except: pass
+
+            if hasattr(self, 'lbl_anlik_hiz'):
+                if secilen_mod == "Speed":
+                    self.lbl_anlik_hiz_title.config(text=self.texts[self.dil]["lbl_speed"])
+                    self.lbl_anlik_hiz.config(text=f"{gercek_hiz:.1f} RPM")
+                else:
+                    self.lbl_anlik_hiz_title.config(text=self.texts[self.dil]["lbl_torque"])
+                    self.lbl_anlik_hiz.config(text=f"{gercek_tork:.1f} %")
+
             try:
                 ham_guc = self.instrument.read_register(self.adres_haritasi["read_guc"], 0, signed=True)
                 gercek_guc = ham_guc * self.katsayi_tablosu["guc"]
@@ -777,12 +968,6 @@ class UltimateACS880App:
                 flux = self.instrument.read_register(123, 0) 
                 self.arayuz_kutu_guncelle(self.dp_kutulari.get("Flux Actual (%)"), f"{flux:.1f}")
             except: pass
-                
-            try:
-                ham_tork_full = self.instrument.read_register(self.adres_haritasi["read_tork"], 0, signed=True)
-                gercek_tork = ham_tork_full * self.katsayi_tablosu["tork_okuma"] # update also in speed mode
-                self.arayuz_kutu_guncelle(self.dp_kutulari.get("Motor Torque (%)"), f"{gercek_tork:.1f}")
-            except: pass
 
             # Read U,V,W currents specifically for the plot
             try:
@@ -792,24 +977,52 @@ class UltimateACS880App:
             except: pass
 
             try:
+                # Sürücüden 16-bitlik 'Status Word' (Durum Kelimesi) okunur
                 sw_val = self.instrument.read_register(self.adres_haritasi["read_status_word"], 0)
+                
+                # Bu 16-bitlik sayı, sağa kaydırma (bit-shift) yöntemiyle tek tek 0 ve 1'lere ayrıştırılır
+                # Örneğin 1142 sayısı binary olarak 0000010001110110 şeklindedir, bu döngü her biti bir listeye atar
                 sw_bits = [(sw_val >> i) & 1 for i in range(16)]
                 
+                # Status Word içindeki bitlerin ne anlama geldiğini sırasıyla (0. bitten 11. bite kadar) tanımlıyoruz
                 status_keys = ["RDY_ON", "RDY_RUN", "RDY_REF", "TRIPPED", "OFF_2_STA", "OFF_3_STA", "SWC_ON_INHIB", "ALARM", "AT_SETPOINT", "REMOTE", "ABOVE_LIMIT", "EXT_RUN_ENABLED"]
+                
+                # Her bir durum (RDY_ON vb.) için döngü oluşturulur
                 for idx, key in enumerate(status_keys):
-                    val = sw_bits[idx]
-                    text_val = self.sw_dict[key][self.dil].get(val, str(val))
+                    val = sw_bits[idx] # İlgili bitin değeri (0 veya 1) alınır
+                    text_val = self.sw_dict[key][self.dil].get(val, str(val)) # 0/1 değerinin dildeki karşılığı bulunur (örn: 1 ise 'Hazır', 0 ise 'Hazır Değil')
                     
                     tur = "info"
+                    # Tehlike durumlarını (TRIPPED veya ALARM bitleri 1 ise) kırmızı (danger) renkte göstermek için kontrol yapıyoruz
                     if key in ["TRIPPED", "ALARM"] and val == 1: tur = "danger"
+                    # Güvenli durumları (Hazır, Çalışıyor) yeşil (success) renkte gösteriyoruz
                     elif key in ["RDY_ON", "RDY_RUN", "RDY_REF"] and val == 1: tur = "success"
+                    # Dikkat gerektiren durumları (Inhibit) sarı (warning) yapıyoruz
                     elif key == "SWC_ON_INHIB" and val == 1: tur = "warning"
                     
+                    # Arayüzdeki kutucuklar bu renklere ve metinlere göre dinamik olarak güncellenir
                     self.arayuz_kutu_guncelle(self.sw_kutulari.get(key), text_val, tur)
             except: pass
             
-            # --- CANLI GRAFİKLERİ GÜNCELLE ---
+            # --- CANLI GRAFİKLERİ VE RAPORU GÜNCELLE ---
             t = time.time() - self.t_start
+            
+            if getattr(self, 'motor_calisiyor', False) and hasattr(self, 'rapor_verileri'):
+                self.rapor_verileri.append({
+                    "Zaman (T)": f"{datetime.now().strftime('%H:%M:%S.%f')[:-3]}",
+                    "Geçen Süre (sn)": round(t, 2),
+                    "Hız (RPM)": round(gercek_hiz, 2),
+                    "Tork (%)": round(gercek_tork, 2),
+                    "Güç (kW)": round(gercek_guc, 2),
+                    "Motor Akımı (A)": round(m_curr, 2),
+                    "DC Bara (V)": round(dc_v, 2),
+                    "Çıkış Frekansı (Hz)": round(o_freq, 2),
+                    "Faz U Akımı (A)": round(u_curr, 2),
+                    "Faz V Akımı (A)": round(v_curr, 2),
+                    "Faz W Akımı (A)": round(w_curr, 2),
+                    "Mod": secilen_mod
+                })
+                
             self.hist_t.append(t)
             self.hist_hiz.append(gercek_hiz)
             self.hist_tork.append(gercek_tork)
@@ -852,10 +1065,13 @@ class UltimateACS880App:
         param_listesi = [
             ("Ramp UP (s)", 30, "write_ramp_up", "rampa"),
             ("Ramp DOWN (s)", 30, "write_ramp_down", "rampa"),
-            ("Speed Ref (RPM)", 3000, "write_hiz", "hiz_yazma") if secilen_mod == "Speed" else ("Torque Ref (%)", 300, "write_tork", "tork_yazma")
+            ("Speed Ref (RPM)", 3000, "write_hiz", "hiz_yazma"),
+            ("Torque Ref (%)", 300, "write_tork", "tork_yazma")
         ]
         
         hatali_veri = False
+        # Bu ilk döngü: Kullanıcının girdiği verilerin güvenlik limitlerini aşmamasını kontrol etmek için tasarlanmıştır.
+        # Örneğin kullanıcı Hız Referansına limit dışı bir değer girerse, bu döngü onu yakalar.
         for isim, limit, adres, katsayi_anahtar in param_listesi:
             widget = self.giris_kutulari.get(isim)
             if not widget: continue
@@ -871,6 +1087,7 @@ class UltimateACS880App:
                 break
                 
         if not hatali_veri and self.baglanti_aktif and self.instrument:
+            # Motor çalışıyorsa Run şifresini, duruyorsa Ready şifresini sürekli olarak sürücüye göndererek 'Heartbeat' sinyali sağlarız
             if getattr(self, 'motor_calisiyor', False):
                 cw_degeri = self.control_words["cw_speed_run"] if secilen_mod == "Speed" else self.control_words["cw_torque_run"]
             else:
@@ -880,36 +1097,48 @@ class UltimateACS880App:
             
             try:
                 self.instrument.write_register(self.control_words["ext_mode_reg"], ext_mod, 0) 
+            except: pass
+            
+            try:
                 self.instrument.write_register(self.adres_haritasi["write_cw"], cw_degeri, 0)
             except: pass
             
+            # Bu ikinci döngü: Arayüzdeki (Rampa süresi, Hız vb.) tüm onaylanmış ayarları tek tek sürücünün ilgili adreslerine yazmak içindir.
             for isim, limit, adres, katsayi_anahtar in param_listesi:
                 widget = self.giris_kutulari.get(isim)
                 if not widget: continue
                 try:
                     deger = float(widget.get())
+                    
+                    # Motor yönüne göre hız ve tork değerlerini negatife çeviriyoruz
                     if hasattr(self, 'var_yon') and self.var_yon.get() == "REV":
                         if "Ref" in isim: deger = -abs(deger)
                     else:
                         if "Ref" in isim: deger = abs(deger)
                             
+                    # Kullanıcının girdiği gerçek değeri (örn 1500 RPM), Modbus katsayısına (örn 0.1) bölerek ham integer sayıya (15000) çeviriyoruz
                     gonderilecek_veri = int(deger / self.katsayi_tablosu.get(katsayi_anahtar, 1.0))
-                    is_signed = True if "Ref" in isim else False
+                    is_signed = True if "Ref" in isim else False # Yön bilgisini (negatif sayıları) iletebilmek için is_signed (işaretli sayı) gönderiyoruz
+                    
                     self.instrument.write_register(self.adres_haritasi[adres], gonderilecek_veri, 0, signed=is_signed)
                     
+                    # Arayüzdeki "Sürücüden Okunan Değer" kısmını güncelliyoruz
                     if hasattr(self, 'okunan_kutular') and isim in self.okunan_kutular:
                         self.arayuz_kutu_guncelle(self.okunan_kutular[isim], str(deger))
                 except: pass
 
-    def rapor_olustur(self):
-        ornek_veri = [
-            {"Zaman": "10:01:00", "Faz U (A)": 12.1, "Faz V (A)": 12.0, "Faz W (A)": 12.2, "Hız (RPM)": 1498, "Güç (kW)": 8.5},
-            {"Zaman": "10:01:01", "Faz U (A)": 12.5, "Faz V (A)": 12.4, "Faz W (A)": 12.6, "Hız (RPM)": 1500, "Güç (kW)": 8.7}
-        ]
-        df = pd.DataFrame(ornek_veri)
-        dosya_adi = f"AGU_PowerLab_DeneyRaporu_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
+    def rapor_olustur(self, oto=False):
+        if not hasattr(self, 'rapor_verileri') or not self.rapor_verileri:
+            if not oto:
+                Messagebox.show_warning("Kaydedilecek rapor verisi bulunamadı! Lütfen önce motoru çalıştırın.", title="Rapor Boş")
+            return
+            
+        df = pd.DataFrame(self.rapor_verileri)
+        dosya_adi = f"AGU_PowerLab_DeneyRaporu_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
         df.to_excel(dosya_adi, index=False)
         self.goster_bildirim(self.texts[self.dil]["msg_rep_ok"] + dosya_adi, "success")
+        if oto:
+            self.rapor_verileri = []
 
     def pencere_baglanti(self):
         baglanti_win = ttk.Toplevel(self.root)
@@ -1026,23 +1255,23 @@ class UltimateACS880App:
         self.ui_tabs.append((self.notebook, 3, "tab_sw"))
 
         # --- SEKME 1: CONTROL SETTINGS ---
-        mod_frame = self.create_t_widget(ttk.Labelframe, tab_control, "lf_mode", padding=10)
-        mod_frame.pack(fill=X, pady=4)
+        mod_frame = self.create_t_widget(ttk.Labelframe, tab_control, "lf_mode", padding=5)
+        mod_frame.pack(fill=X, pady=2)
         
-        self.create_t_widget(ttk.Label, mod_frame, "ctrl_mode").grid(row=0, column=0, sticky=W, pady=4)
-        self.cb_control_mode = ttk.Combobox(mod_frame, values=["Speed", "Torque"], width=12)
+        self.create_t_widget(ttk.Label, mod_frame, "ctrl_mode").grid(row=0, column=0, sticky=W, pady=2)
+        self.cb_control_mode = ttk.Combobox(mod_frame, values=["Speed", "Torque"], width=10)
         self.cb_control_mode.current(0)
         self.cb_control_mode.grid(row=0, column=1, padx=5)
         
-        self.create_t_widget(ttk.Label, mod_frame, "dir").grid(row=1, column=0, sticky=W, pady=4)
+        self.create_t_widget(ttk.Label, mod_frame, "dir").grid(row=0, column=2, sticky=W, pady=2, padx=(10,0))
         yon_frame = ttk.Frame(mod_frame)
-        yon_frame.grid(row=1, column=1, sticky=W, padx=5)
+        yon_frame.grid(row=0, column=3, sticky=W, padx=5)
         self.var_yon = ttk.StringVar(value="FWD")
         self.create_t_widget(ttk.Radiobutton, yon_frame, "fwd", value="FWD", variable=self.var_yon, bootstyle=INFO).pack(side=LEFT, padx=2)
         self.create_t_widget(ttk.Radiobutton, yon_frame, "rev", value="REV", variable=self.var_yon, bootstyle=INFO).pack(side=LEFT, padx=2)
 
-        param_frame = self.create_t_widget(ttk.Labelframe, tab_control, "lf_params", padding=10)
-        param_frame.pack(fill=X, pady=4)
+        param_frame = self.create_t_widget(ttk.Labelframe, tab_control, "lf_params", padding=5)
+        param_frame.pack(fill=X, pady=2)
         
         self.create_t_widget(ttk.Label, param_frame, "col_param", font=("Segoe UI", 9, "bold")).grid(row=0, column=0, sticky=W)
         self.create_t_widget(ttk.Label, param_frame, "col_target", font=("Segoe UI", 9, "bold")).grid(row=0, column=1)
@@ -1058,7 +1287,7 @@ class UltimateACS880App:
         self.giris_kutulari = {}
         self.okunan_kutular = {}
         for i, (isim, varsayilan, limit) in enumerate(parametreler, start=1):
-            self.create_t_widget(ttk.Label, param_frame, isim, font=("Segoe UI", 9)).grid(row=i, column=0, sticky=W, pady=5)
+            self.create_t_widget(ttk.Label, param_frame, isim, font=("Segoe UI", 9)).grid(row=i, column=0, sticky=W, pady=2)
             
             ent = ttk.Entry(param_frame, width=8)
             ent.insert(0, varsayilan)
@@ -1134,33 +1363,52 @@ class UltimateACS880App:
             self.sw_kutulari[item] = ent
 
         # --- SABİT ALT PANELLER ---
-        guc_frame = self.create_t_widget(ttk.Labelframe, sol_panel, "lf_digital", padding=10)
-        guc_frame.pack(fill=X, pady=4)
+        guc_frame = self.create_t_widget(ttk.Labelframe, sol_panel, "lf_digital", padding=5)
+        guc_frame.pack(fill=X, pady=2)
         
         key_btn_live = "btn_live_stop" if self.canli_okuma_aktif else "btn_live_start"
         boot_live = (DANGER, OUTLINE) if self.canli_okuma_aktif else (INFO, OUTLINE)
         self.btn_canli_veri = self.create_t_widget(ttk.Button, guc_frame, key_btn_live, bootstyle=boot_live, command=self.toggle_haberlesme)
-        self.btn_canli_veri.grid(row=0, column=0, columnspan=2, sticky=EW, pady=(0, 10))
+        self.btn_canli_veri.grid(row=0, column=0, columnspan=2, sticky=EW, pady=(0, 4))
         
-        self.lbl_anlik_hiz_title = self.create_t_widget(ttk.Label, guc_frame, "lbl_speed", font=("Segoe UI", 10))
-        self.lbl_anlik_hiz_title.grid(row=1, column=0, sticky=W, pady=3)
+        self.lbl_anlik_hiz_title = self.create_t_widget(ttk.Label, guc_frame, "lbl_speed", font=(UI_FONT_FAMILY, UI_FONT_SIZE_NORMAL))
+        self.lbl_anlik_hiz_title.grid(row=1, column=0, sticky=W, pady=1)
         self.lbl_anlik_hiz = ttk.Label(guc_frame, text="---", font=("Segoe UI", 11, "bold"), bootstyle=INFO)
-        self.lbl_anlik_hiz.grid(row=1, column=1, sticky=E, pady=3, padx=20)
+        self.lbl_anlik_hiz.grid(row=1, column=1, sticky=E, pady=1, padx=20)
         
-        self.create_t_widget(ttk.Label, guc_frame, "lbl_power", font=("Segoe UI", 10)).grid(row=2, column=0, sticky=W, pady=3)
+        self.create_t_widget(ttk.Label, guc_frame, "lbl_power", font=(UI_FONT_FAMILY, UI_FONT_SIZE_NORMAL)).grid(row=2, column=0, sticky=W, pady=1)
         self.lbl_anlik_guc = ttk.Label(guc_frame, text="---", font=("Segoe UI", 11, "bold"), bootstyle=WARNING)
-        self.lbl_anlik_guc.grid(row=2, column=1, sticky=E, pady=3, padx=20)
+        self.lbl_anlik_guc.grid(row=2, column=1, sticky=E, pady=1, padx=20)
 
-        stop_frame = self.create_t_widget(ttk.Labelframe, sol_panel, "lf_oper", padding=10)
-        stop_frame.pack(fill=X, pady=4)
+        stop_frame = self.create_t_widget(ttk.Labelframe, sol_panel, "lf_oper", padding=5)
+        stop_frame.pack(fill=BOTH, expand=True, pady=2)
         
         btn_frame = ttk.Frame(stop_frame)
-        btn_frame.pack(fill=X, pady=4)
-        self.create_t_widget(ttk.Button, btn_frame, "btn_start", bootstyle=SUCCESS, command=self.motor_baslat).pack(side=LEFT, fill=X, expand=True, padx=(0, 2))
-        self.create_t_widget(ttk.Button, btn_frame, "btn_stop", bootstyle=WARNING, command=self.motor_durdur).pack(side=LEFT, fill=X, expand=True, padx=(2, 0))
+        btn_frame.pack(fill=X, pady=(0, 4))
+        self.create_t_widget(ttk.Button, btn_frame, "btn_start", bootstyle=SUCCESS, command=self.motor_baslat).pack(side=LEFT, fill=X, expand=True, padx=(0, 2), ipady=2)
+        self.create_t_widget(ttk.Button, btn_frame, "btn_stop", bootstyle=WARNING, command=self.motor_durdur).pack(side=LEFT, fill=X, expand=True, padx=(2, 2), ipady=2)
+        self.create_t_widget(ttk.Button, btn_frame, "btn_estop", bootstyle=DANGER, command=self.motor_acil_stop).pack(side=LEFT, fill=X, expand=True, padx=(0, 0), ipady=2)
         
-        self.create_t_widget(ttk.Button, stop_frame, "btn_estop", bootstyle=DANGER, command=self.motor_acil_stop).pack(pady=4, fill=X)
-        self.create_t_widget(ttk.Button, stop_frame, "btn_report", bootstyle=INFO, command=self.rapor_olustur).pack(pady=4, fill=X)
+        timed_frame = ttk.Frame(stop_frame)
+        timed_frame.pack(fill=X, pady=(0, 4))
+        self.create_t_widget(ttk.Label, timed_frame, "lbl_timer", font=("Segoe UI", 9)).pack(side=LEFT, padx=(0, 2))
+        self.ent_sure = ttk.Entry(timed_frame, width=4)
+        self.ent_sure.insert(0, "5")
+        self.ent_sure.pack(side=LEFT, padx=(0, 2))
+        self.cb_sure_birim = ttk.Combobox(timed_frame, values=["Min", "Sec"], width=4, state="readonly")
+        self.cb_sure_birim.set("Min")
+        self.cb_sure_birim.pack(side=LEFT, padx=(0, 5))
+        self.create_t_widget(ttk.Button, timed_frame, "btn_timed_start", bootstyle=(PRIMARY, OUTLINE), command=self.motor_baslat_sureli).pack(side=LEFT, fill=X, expand=True)
+        
+        bottom_btn_frame = ttk.Frame(stop_frame)
+        bottom_btn_frame.pack(fill=X, expand=True, pady=(0, 2))
+        self.lbl_sayac_title = ttk.Label(bottom_btn_frame, text="Kalan Süre:" if self.dil=="TR" else "Time Left:", font=("Segoe UI", 9, "bold"))
+        self.lbl_sayac_title.pack(side=LEFT, padx=(0, 5))
+        self.ent_sayac = ttk.Entry(bottom_btn_frame, width=8, bootstyle=PRIMARY, font=("Segoe UI", 10, "bold"), justify="center")
+        self.ent_sayac.insert(0, "00:00")
+        self.ent_sayac.configure(state="readonly")
+        self.ent_sayac.pack(side=LEFT, padx=(0, 10))
+        self.create_t_widget(ttk.Button, bottom_btn_frame, "btn_report", bootstyle=INFO, command=self.rapor_olustur).pack(side=RIGHT, fill=X, expand=True, ipady=2)
 
         # --- SAĞ PANEL (Grafikler Notebook) ---
         sag_panel = ttk.Frame(main_layout)
